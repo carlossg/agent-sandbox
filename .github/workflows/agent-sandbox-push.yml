@@ -16,8 +16,8 @@ on:
 env:
   IMAGE_NAME: agent-sandbox
   # GHCR: use repo owner (passwordless) or GHCR_USERNAME when GHCR_TOKEN is set
-  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/agent-sandbox
-  DOCKERHUB_IMAGE: csanchez/agent-sandbox
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/agent-sandbox-controller
+  DOCKERHUB_IMAGE: csanchez/agent-sandbox-controller
 
 jobs:
   build-and-push:
