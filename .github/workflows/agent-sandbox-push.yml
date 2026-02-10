@@ -1,0 +1,71 @@
+# Build and push agent-sandbox image to GHCR and Docker Hub (csanchez)
+#
+# GHCR: passwordless via GITHUB_TOKEN. Image is ghcr.io/<repo_owner>/agent-sandbox.
+#       To push to a different owner, set GHCR_TOKEN (PAT with write:packages) and
+#       GHCR_USERNAME; then the job uses those instead.
+# Docker Hub: requires DOCKERHUB_TOKEN secret.
+name: Push agent-sandbox image
+
+on:
+  push:
+    branches: [carlos]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: agent-sandbox
+  # GHCR: use repo owner (passwordless) or GHCR_USERNAME when GHCR_TOKEN is set
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/agent-sandbox-controller
+  DOCKERHUB_IMAGE: csanchez/agent-sandbox-controller
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image tag
+        id: meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag_latest=latest" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: csanchez
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push to GHCR and Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.tag_latest }}
+            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.tag_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
