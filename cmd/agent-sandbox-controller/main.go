@@ -103,6 +103,10 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	if watchNamespace == "" {
+		watchNamespace = os.Getenv("WATCH_NAMESPACE")
+	}
+
 	if printVersion {
 		fmt.Println(version.Print("agent-sandbox-controller"))
 		os.Exit(0)
@@ -222,8 +226,12 @@ func main() {
 		LeaderElectionID:        "a3317529.agent-sandbox.x-k8s.io",
 	}
 	if watchNamespace != "" {
+		watchNamespace = strings.TrimSpace(watchNamespace)
 		mgrOpts.Cache = cache.Options{
 			DefaultNamespaces: map[string]cache.Config{watchNamespace: {}},
+		}
+		if enableLeaderElection && leaderElectionNamespace == "" {
+			mgrOpts.LeaderElectionNamespace = watchNamespace
 		}
 		setupLog.Info("running in namespaced mode", "namespace", watchNamespace)
 	}
