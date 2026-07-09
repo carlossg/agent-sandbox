@@ -1,0 +1,78 @@
+agent-sandbox has been installed.
+
+{{- if .Values.controller.watchNamespace }}
+
+NOTE: Namespaced mode is enabled (watchNamespace={{ .Values.controller.watchNamespace }}).
+
+In namespaced mode the controller skips webhook certificate generation, CRD
+caBundle patching, and the webhook server. Conversion webhooks are only invoked
+when the API server needs to translate a stored object between API versions
+(e.g. v1alpha1 ↔ v1beta1). If all your CRs are already stored at the current
+preferred version this has no effect.
+
+If you do have resources stored at a non-preferred API version, ensure that
+either a cluster-scoped agent-sandbox instance or external cert management is
+serving the conversion webhooks in this cluster.
+
+Apply the following Role and RoleBinding in each watched namespace:
+{{- range splitList "," .Values.controller.watchNamespace }}
+{{- $ns := trim . }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-sandbox-controller
+  namespace: {{ $ns }}
+rules:
+- apiGroups: [""]
+  resources: [persistentvolumeclaims, pods, services]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [agents.x-k8s.io]
+  resources: [sandboxes]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [agents.x-k8s.io]
+  resources: [sandboxes/finalizers, sandboxes/status]
+  verbs: [get, patch, update]
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]
+{{- if $.Values.controller.extensions }}
+- apiGroups: ["", events.k8s.io]
+  resources: [events]
+  verbs: [create, patch, update]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [extensions.agents.x-k8s.io]
+  resources: [sandboxclaims, sandboxtemplates, sandboxwarmpools]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [extensions.agents.x-k8s.io]
+  resources:
+  - sandboxclaims/finalizers
+  - sandboxclaims/status
+  - sandboxtemplates/finalizers
+  - sandboxwarmpools/finalizers
+  - sandboxwarmpools/status
+  verbs: [get, patch, update]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [create, delete, get, list, patch, update, watch]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-sandbox-controller
+  namespace: {{ $ns }}
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: {{ include "agent-sandbox.namespace" $ }}
+roleRef:
+  kind: Role
+  name: agent-sandbox-controller
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+
+{{- end }}

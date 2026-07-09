@@ -85,6 +85,7 @@ The following table lists the configurable parameters and their defaults.
 | `namespace.name` | Namespace to deploy into | `agent-sandbox-system` |
 | `controller.leaderElect` | Enable leader election | `true` |
 | `controller.leaderElectionNamespace` | Namespace for the leader election resource (auto-detected if empty) | `""` |
+| `controller.watchNamespace` | Namespace(s) to watch; comma-separated for multi-namespace mode. Falls back to `WATCH_NAMESPACE` env var. Empty means cluster-scoped. When set, the chart injects `--leader-election-namespace=<release-namespace>` and creates a lease Role and RoleBinding in the controller namespace. **Note:** Setting this value disables the webhook server, cert generation, and CRD caBundle patching. Conversion webhooks are only invoked when the API server translates objects between API versions; if all CRs are stored at the current preferred version this has no impact. If you have resources at a non-preferred version, a cluster-scoped instance or external cert management must serve the conversion webhooks. See [Namespace Scoping](../docs/configuration.md#namespace-scoping) for details. | `""` |
 | `controller.clusterDomain` | Kubernetes cluster domain for service FQDN generation | `"cluster.local"` |
 | `controller.kubeApiQps` | Client-side QPS limit for the Kubernetes API client (`-1` = unlimited) | `-1.0` |
 | `controller.kubeApiBurst` | Burst limit for the Kubernetes API client | `10` |

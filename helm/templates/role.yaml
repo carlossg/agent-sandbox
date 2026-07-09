@@ -6,6 +6,7 @@ metadata:
   labels:
     {{- include "agent-sandbox.labels" . | nindent 4 }}
 rules:
+{{- if not .Values.controller.watchNamespace }}
 - apiGroups:
   - ""
   resources:
@@ -22,3 +23,16 @@ rules:
   - get
   - patch
   - update
+{{- else }}
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+{{- end }}
