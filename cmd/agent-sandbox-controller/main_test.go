@@ -71,10 +71,11 @@ func TestValidateLeaderElectionNamespace(t *testing.T) {
 
 func TestParseWatchNamespaces(t *testing.T) {
 	tests := []struct {
-		name     string
-		flag     string
-		env      string
-		expected []string
+		name          string
+		flag          string
+		env           string
+		expected      []string
+		expectedError string
 	}{
 		{
 			name:     "empty flag and no env is cluster-scoped",
@@ -121,6 +122,17 @@ func TestParseWatchNamespaces(t *testing.T) {
 			env:      "",
 			expected: nil,
 		},
+		{
+			name:          "rejects flag with no namespaces",
+			flag:          " , , ",
+			env:           "team-a",
+			expectedError: "--namespace must contain at least one non-empty namespace",
+		},
+		{
+			name:          "rejects environment variable with no namespaces",
+			env:           " , , ",
+			expectedError: "WATCH_NAMESPACE must contain at least one non-empty namespace",
+		},
 	}
 
 	for _, tt := range tests {
@@ -128,7 +140,13 @@ func TestParseWatchNamespaces(t *testing.T) {
 			// Always set WATCH_NAMESPACE so the result does not depend on the
 			// environment inherited from the test runner.
 			t.Setenv("WATCH_NAMESPACE", tt.env)
-			assert.Equal(t, tt.expected, parseWatchNamespaces(tt.flag))
+			actual, err := parseWatchNamespaces(tt.flag)
+			if tt.expectedError != "" {
+				require.EqualError(t, err, tt.expectedError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, actual)
 		})
 	}
 }

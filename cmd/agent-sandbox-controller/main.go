@@ -131,14 +131,17 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	watchNamespaces := parseWatchNamespaces(watchNamespace)
-
 	if printVersion {
 		fmt.Println(version.Print("agent-sandbox-controller"))
 		os.Exit(0)
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	watchNamespaces, err := parseWatchNamespaces(watchNamespace)
+	if err != nil {
+		setupLog.Error(err, "invalid namespace configuration")
+		os.Exit(1)
+	}
 	if err := validateWebhookConfiguration(enableWebhook, watchNamespaces); err != nil {
 		setupLog.Error(err, "invalid webhook configuration")
 		os.Exit(1)
@@ -489,13 +492,15 @@ func validateLeaderElectionNamespace(inClusterConfigErr error) error {
 // parseWatchNamespaces returns the list of namespaces to watch, following the
 // Operator SDK convention: flag value takes precedence, then WATCH_NAMESPACE env var,
 // empty means cluster-scoped. Accepts comma-separated values for multi-namespace mode.
-func parseWatchNamespaces(flagValue string) []string {
+func parseWatchNamespaces(flagValue string) ([]string, error) {
 	v := flagValue
+	source := "--namespace"
 	if v == "" {
 		v = os.Getenv("WATCH_NAMESPACE")
+		source = "WATCH_NAMESPACE"
 	}
 	if v == "" {
-		return nil
+		return nil, nil
 	}
 	var result []string
 	seen := map[string]struct{}{}
@@ -508,5 +513,8 @@ func parseWatchNamespaces(flagValue string) []string {
 			result = append(result, ns)
 		}
 	}
-	return result
+	if len(result) == 0 {
+		return nil, fmt.Errorf("%s must contain at least one non-empty namespace", source)
+	}
+	return result, nil
 }
