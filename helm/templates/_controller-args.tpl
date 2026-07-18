@@ -1,4 +1,8 @@
 {{- define "agent-sandbox.controllerArgs" -}}
+{{- $watchNamespaces := include "agent-sandbox.watchNamespaces" . | fromJsonArray -}}
+{{- if and .Values.controller.watchNamespace (eq (len $watchNamespaces) 0) -}}
+{{- fail "controller.watchNamespace must contain at least one non-empty namespace" -}}
+{{- end }}
 {{- if hasKey .Values.controller "leaderElect" }}
 - --leader-elect={{ .Values.controller.leaderElect }}
 {{- end }}
@@ -12,6 +16,7 @@
 {{- end }}
 {{- if .Values.controller.watchNamespace }}
 - --namespace={{ .Values.controller.watchNamespace }}
+- --enable-webhook=false
 {{- end }}
 {{- if hasKey .Values.controller "extensions" }}
 - --extensions={{ .Values.controller.extensions }}

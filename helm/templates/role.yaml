@@ -1,8 +1,12 @@
+{{- $watchNamespaces := include "agent-sandbox.watchNamespaces" . | fromJsonArray -}}
+{{- $controllerNamespace := include "agent-sandbox.namespace" . -}}
+{{- $controllerNamespaceWatched := has $controllerNamespace $watchNamespaces -}}
+{{- if or (not .Values.controller.watchNamespace) $controllerNamespaceWatched }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: agent-sandbox-controller
-  namespace: {{ include "agent-sandbox.namespace" . }}
+  namespace: {{ $controllerNamespace }}
   labels:
     {{- include "agent-sandbox.labels" . | nindent 4 }}
 rules:
@@ -24,15 +28,9 @@ rules:
   - patch
   - update
 {{- else }}
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
+{{ .Files.Get "files/rbac.namespaced.generated.yaml" -}}
+{{- if .Values.controller.extensions }}
+{{ .Files.Get "files/extensions-rbac.namespaced.generated.yaml" -}}
+{{- end }}
+{{- end }}
 {{- end }}

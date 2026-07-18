@@ -15,11 +15,81 @@ The `agent-sandbox-controller` supports several command-line flags to tune perfo
 
 By default the controller watches all namespaces. Use `--namespace` (or the `WATCH_NAMESPACE` environment variable) to restrict it to one or more namespaces.
 
-* `--namespace` (default: `""`, cluster-scoped): Comma-separated list of namespaces to watch. When set, the controller only caches and reconciles resources in those namespaces. Falls back to the `WATCH_NAMESPACE` environment variable when the flag is not provided.
+* `--namespace` (default: `""`, cluster-scoped): Comma-separated list of namespaces to watch. When set, the controller only caches and reconciles resources in those namespaces. Falls back to the `WATCH_NAMESPACE` environment variable when the flag is not provided. Requires `--enable-webhook=false`.
 
 > **Conversion webhooks are disabled in namespaced mode.** Webhook certificate generation, CRD CA-bundle patching, and the conversion webhook server are all skipped when `--namespace` (or `WATCH_NAMESPACE`) is set. These operate on cluster-scoped resources (`CustomResourceDefinition`s and their conversion webhooks), which a namespace-scoped deployment cannot manage. As a result the controller needs **no cluster-scoped RBAC** and can run with only a `Role`/`RoleBinding`. The CRDs and their conversion webhooks must instead be installed and managed cluster-wide — by a cluster admin or a separate cluster-scoped controller instance.
 >
+> **Migrate stored v1alpha1 objects before disabling conversion webhooks.** If etcd still contains v1alpha1 objects, API requests that need to return or update them as v1beta1 require a working conversion webhook and will fail without one. Before switching to namespaced mode, complete the [API storage migration](api-migration-guide.md), or keep a cluster-scoped controller or externally managed conversion webhook available.
+>
 > No admission webhooks (defaulting or validating) are registered by this controller — all field defaults are declared as `+kubebuilder:default` markers in the CRD schema and are applied by the API server directly, so admission behavior is identical in namespaced and cluster-scoped modes.
+
+### Controller argument behavior
+
+The following matrix assumes `--leader-elect=true`. An unset `--enable-webhook`
+is equivalent to `--enable-webhook=true`.
+
+| `--enable-webhook` | `--namespace` | Leader namespace explicit | Leader namespace empty, in-cluster | Leader namespace empty, out-of-cluster |
+|---|---|---|---|---|
+| Unset or `true` | Empty | Starts cluster-scoped; webhooks enabled; Lease in specified namespace | Starts cluster-scoped; webhooks enabled; Lease in Pod namespace | Startup fails: leader-election namespace cannot be determined |
+| Unset or `true` | Single | Startup validation error: namespaced mode requires `--enable-webhook=false` | Same validation error | Same validation error |
+| Unset or `true` | Multiple | Startup validation error: namespaced mode requires `--enable-webhook=false` | Same validation error | Same validation error |
+| `false` | Empty | Starts cluster-scoped; webhooks disabled; Lease in specified namespace | Starts cluster-scoped; webhooks disabled; Lease in Pod namespace | Startup fails: leader-election namespace cannot be determined |
+| `false` | Single | Starts single-namespace; webhooks disabled; Lease in specified namespace | Starts single-namespace; webhooks disabled; Lease in Pod namespace | Startup fails: explicit leader-election namespace required |
+| `false` | Multiple | Starts multi-namespace; webhooks disabled; Lease in specified namespace | Starts multi-namespace; webhooks disabled; Lease in Pod namespace | Startup fails: explicit leader-election namespace required |
+
+If leader-election RBAC is missing, the process can remain running while the
+controllers fail to acquire leadership and therefore do not reconcile.
+
+### Helm behavior
+
+The Helm chart has no first-class `controller.enableWebhook` value. Without
+`controller.watchNamespace`, the chart omits the flag and webhooks default to
+enabled. With `controller.watchNamespace`, the chart injects
+`--enable-webhook=false`. An explicit override can be added through
+`controller.extraArgs`.
+
+The tables use the following RBAC abbreviations:
+
+* **C** — Helm creates the controller `ClusterRole` and `ClusterRoleBinding`,
+  plus the webhook-certificate `Role` and `RoleBinding` in the release namespace.
+* **L** — Helm creates the `agent-sandbox-controller-leader-election` `Role`
+  and `RoleBinding` in the release namespace.
+* **W** — Helm creates the workload `agent-sandbox-controller` `Role` and
+  `RoleBinding` because the release namespace is watched.
+* **NOTES-L** — Helm NOTES prints leader-election `Role` and `RoleBinding`
+  manifests for manual application.
+* **NOTES-W** — Helm NOTES prints workload `Role` and `RoleBinding` manifests
+  for watched namespaces outside the release namespace.
+
+#### Default chart-controlled webhook behavior
+
+| `controller.watchNamespace` | Effective webhook state | Leader namespace unset or release namespace | Leader namespace explicitly empty | Leader namespace outside release namespace |
+|---|---|---|---|---|
+| Empty | Enabled | Starts cluster-scoped. **Helm: C** | Starts cluster-scoped; controller-runtime discovers the Pod namespace. **Helm: C** | Starts cluster-scoped; Lease in specified namespace. **Helm: C** |
+| Single or multiple, excludes release namespace | Disabled | Starts namespaced. **Helm: L; NOTES-W** | Starts namespaced; controller-runtime discovers the release namespace. **Helm: L; NOTES-W** | Pod starts but cannot lead until manual RBAC is applied. **Helm: none; NOTES-L + NOTES-W** |
+| Single, equals release namespace | Disabled | Starts namespaced. **Helm: L + W** | Starts namespaced; controller-runtime discovers the release namespace. **Helm: L + W** | Pod starts but cannot lead until manual RBAC is applied. **Helm: W; NOTES-L** |
+| Multiple, includes release namespace | Disabled | Starts namespaced. **Helm: L + W; NOTES-W for remaining namespaces** | Same effective behavior. **Helm: L + W; NOTES-W** | Pod starts but cannot lead until manual RBAC is applied. **Helm: W; NOTES-L + NOTES-W** |
+
+#### Explicit `--enable-webhook=true` through `controller.extraArgs`
+
+| `controller.watchNamespace` | Effective rendered arguments | Runtime behavior | Helm RBAC |
+|---|---|---|---|
+| Empty | `--enable-webhook=true` | Starts cluster-scoped with webhooks enabled | **C** |
+| Set, excludes release namespace | Helm emits `false`, then `extraArgs` emits `true` | Startup validation error | **L** or **NOTES-L**, depending on leader namespace; **NOTES-W** |
+| Set, includes release namespace | Helm emits `false`, then `extraArgs` emits `true` | Startup validation error | **L + W**, or **W + NOTES-L** for an external leader namespace |
+
+#### Explicit `--enable-webhook=false` through `controller.extraArgs`
+
+| `controller.watchNamespace` | Runtime behavior | Helm RBAC |
+|---|---|---|
+| Empty | Starts cluster-scoped with webhooks disabled | **C**, including the unused webhook Service and certificate RBAC |
+| Set, excludes release namespace | Starts namespaced | **L + NOTES-W**, or **NOTES-L + NOTES-W** for an external leader namespace |
+| Set, includes release namespace | Starts namespaced | **L + W**, or **W + NOTES-L** for an external leader namespace |
+
+With `controller.leaderElect=false`, leader-election namespace values are
+ignored and neither **L** nor **NOTES-L** is required. Helm never creates
+resources in watched or leader-election namespaces outside the release
+namespace.
 
 ### Single-namespace mode
 
@@ -30,11 +100,12 @@ By default the controller watches all namespaces. Use `--namespace` (or the `WAT
         args:
         - --leader-elect=true
         - --namespace=my-team-ns
+        - --enable-webhook=false
 ```
 
 When `--leader-election-namespace` is not set and the controller is running in-cluster, controller-runtime resolves the lease namespace from the pod's own service-account namespace (typically `agent-sandbox-system`). When running out-of-cluster you must set `--leader-election-namespace` explicitly.
 
-The Helm chart always injects `--leader-election-namespace=<release-namespace>` in namespaced mode and creates the matching Role and RoleBinding in that namespace, so no manual RBAC is needed for the lease when deploying via Helm.
+By default, the Helm chart injects `--leader-election-namespace=<release-namespace>` in namespaced mode and creates a dedicated leader-election Role and RoleBinding there. If `controller.leaderElectionNamespace` selects another namespace, Helm does not create resources across namespace boundaries; the installation NOTES print the Role and RoleBinding to apply manually. When the release namespace is also watched, the chart includes its workload permissions in a separate Role so leader-election and workload RBAC cannot overwrite each other.
 
 ### Multi-namespace mode
 
@@ -42,6 +113,7 @@ The Helm chart always injects `--leader-election-namespace=<release-namespace>` 
         args:
         - --leader-elect=true
         - --namespace=team-a,team-b,team-c
+        - --enable-webhook=false
         - --leader-election-namespace=agent-sandbox-system
 ```
 

@@ -15,10 +15,59 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/rest"
 )
+
+func TestValidateWebhookConfiguration(t *testing.T) {
+	tests := []struct {
+		name            string
+		enableWebhook   bool
+		watchNamespaces []string
+		expectedError   string
+	}{
+		{
+			name:          "cluster-scoped webhook is allowed",
+			enableWebhook: true,
+		},
+		{
+			name:            "namespaced mode requires webhook disabled",
+			enableWebhook:   true,
+			watchNamespaces: []string{"team-a"},
+			expectedError:   "--enable-webhook must be false when running in namespaced mode (--namespace)",
+		},
+		{
+			name:            "namespaced mode without webhook is allowed",
+			watchNamespaces: []string{"team-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWebhookConfiguration(tt.enableWebhook, tt.watchNamespaces)
+			if tt.expectedError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tt.expectedError)
+		})
+	}
+}
+
+func TestValidateLeaderElectionNamespace(t *testing.T) {
+	require.NoError(t, validateLeaderElectionNamespace(nil))
+	require.EqualError(t, validateLeaderElectionNamespace(rest.ErrNotInCluster),
+		"--leader-election-namespace must be set when running in namespaced mode outside a cluster")
+
+	inClusterConfigErr := errors.New("service account token is unavailable")
+	err := validateLeaderElectionNamespace(inClusterConfigErr)
+	require.ErrorContains(t, err, "check in-cluster configuration for automatic namespace detection")
+	assert.ErrorIs(t, err, inClusterConfigErr)
+}
 
 func TestParseWatchNamespaces(t *testing.T) {
 	tests := []struct {

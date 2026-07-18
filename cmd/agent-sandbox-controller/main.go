@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -93,11 +94,11 @@ func main() {
 	flag.StringVar(&webhookServiceName, "webhook-service-name", "agent-sandbox-webhook-service", "The name of the webhook service.")
 	flag.StringVar(&webhookNamespace, "webhook-namespace", "agent-sandbox-system", "The namespace of the webhook service.")
 	flag.BoolVar(&manageWebhookCerts, "manage-webhook-certs", true, "Manage webhook serving certs and patch CRD conversion caBundles on startup. Set to false when certs and CRD/webhook configuration are managed externally (e.g., GKE Dynamic Certificate Delivery).")
-	flag.BoolVar(&enableWebhook, "enable-webhook", true, "Enable webhook server and webhook registrations.")
+	flag.BoolVar(&enableWebhook, "enable-webhook", true, "Enable webhook server and CRD conversion webhook registrations. Must be false when running in namespaced mode (--namespace).")
 	flag.StringVar(&clusterDomain, "cluster-domain", "cluster.local", "Kubernetes cluster domain for service FQDN generation")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&watchNamespace, "namespace", "",
-		"Namespace(s) to watch. Comma-separated for multiple. Falls back to WATCH_NAMESPACE env var. Empty means all namespaces.")
+		"Namespace(s) to watch. Comma-separated for multiple. Falls back to WATCH_NAMESPACE env var. Empty means cluster-scoped (all namespaces). Setting this requires --enable-webhook=false.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
@@ -132,18 +133,16 @@ func main() {
 
 	watchNamespaces := parseWatchNamespaces(watchNamespace)
 
-	// In namespaced mode the controller cannot manage cluster-scoped resources
-	// (CRDs and their conversion webhooks), so webhooks and CRD CA-bundle
-	// patching are disabled. Those must be managed cluster-wide externally.
-	webhooksEnabled := enableWebhook && len(watchNamespaces) == 0
-
 	if printVersion {
 		fmt.Println(version.Print("agent-sandbox-controller"))
 		os.Exit(0)
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
+	if err := validateWebhookConfiguration(enableWebhook, watchNamespaces); err != nil {
+		setupLog.Error(err, "invalid webhook configuration")
+		os.Exit(1)
+	}
 	setupLog.Info("Concurrency settings",
 		"sandbox", sandboxConcurrentWorkers,
 		"sandboxClaim", sandboxClaimConcurrentWorkers,
@@ -185,9 +184,14 @@ func main() {
 	}
 
 	if !enableWebhook {
-		setupLog.Info("webhook subsystem disabled (--enable-webhook=false); " +
-			"installed CRDs must use conversion.strategy=None — the stock CRDs in k8s/crds " +
-			"and helm/crds use Webhook conversion and API version conversion will fail without the webhook server")
+		if len(watchNamespaces) > 0 {
+			setupLog.Info("webhook subsystem disabled for namespaced mode; migrate stored v1alpha1 objects to v1beta1 " +
+				"or keep a cluster-scoped or externally managed conversion webhook available")
+		} else {
+			setupLog.Info("webhook subsystem disabled (--enable-webhook=false); " +
+				"installed CRDs must use conversion.strategy=None — the stock CRDs in k8s/crds " +
+				"and helm/crds use Webhook conversion and API version conversion will fail without the webhook server")
+		}
 		if manageWebhookCerts {
 			setupLog.Info("--manage-webhook-certs has no effect when --enable-webhook=false")
 		}
@@ -264,7 +268,7 @@ func main() {
 	restConfig.QPS = float32(kubeAPIQPS)
 	restConfig.Burst = kubeAPIBurst
 
-	if webhooksEnabled {
+	if enableWebhook {
 		if manageWebhookCerts {
 			// Create a temporary client to patch the CRDs and access Secrets
 			tempClient, err := client.New(restConfig, client.Options{Scheme: scheme})
@@ -314,7 +318,7 @@ func main() {
 		LeaderElectionNamespace: leaderElectionNamespace,
 		LeaderElectionID:        "a3317529.agent-sandbox.x-k8s.io",
 	}
-	if webhooksEnabled {
+	if enableWebhook {
 		mgrOpts.WebhookServer = webhook.NewServer(webhook.Options{
 			Port:    webhookPort,
 			CertDir: webhookCertDir,
@@ -334,9 +338,9 @@ func main() {
 			DefaultNamespaces: defaultNamespaces,
 		}
 		if enableLeaderElection && leaderElectionNamespace == "" {
-			if _, err := rest.InClusterConfig(); err != nil {
-				// Out-of-cluster: controller-runtime cannot auto-detect the namespace.
-				setupLog.Error(nil, "--leader-election-namespace must be set when running in namespaced mode outside a cluster")
+			_, inClusterConfigErr := rest.InClusterConfig()
+			if err := validateLeaderElectionNamespace(inClusterConfigErr); err != nil {
+				setupLog.Error(err, "unable to determine leader election namespace")
 				os.Exit(1)
 			}
 			// In-cluster: controller-runtime resolves the namespace from the pod's service account.
@@ -364,7 +368,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if webhooksEnabled {
+	if enableWebhook {
 		if err = ctrl.NewWebhookManagedBy(mgr, &sandboxv1beta1.Sandbox{}).
 			Complete(); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Sandbox")
@@ -426,7 +430,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if webhooksEnabled {
+		if enableWebhook {
 			if err = ctrl.NewWebhookManagedBy(mgr, &extensionsv1beta1.SandboxClaim{}).
 				Complete(); err != nil {
 				setupLog.Error(err, "unable to create webhook", "webhook", "SandboxClaim")
@@ -463,6 +467,23 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func validateWebhookConfiguration(enableWebhook bool, watchNamespaces []string) error {
+	if enableWebhook && len(watchNamespaces) > 0 {
+		return errors.New("--enable-webhook must be false when running in namespaced mode (--namespace)")
+	}
+	return nil
+}
+
+func validateLeaderElectionNamespace(inClusterConfigErr error) error {
+	if inClusterConfigErr == nil {
+		return nil
+	}
+	if errors.Is(inClusterConfigErr, rest.ErrNotInCluster) {
+		return errors.New("--leader-election-namespace must be set when running in namespaced mode outside a cluster")
+	}
+	return fmt.Errorf("check in-cluster configuration for automatic namespace detection: %w", inClusterConfigErr)
 }
 
 // parseWatchNamespaces returns the list of namespaces to watch, following the
